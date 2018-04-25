@@ -522,6 +522,26 @@ int picoquic_enable_custom_verify_certificate_callback(picoquic_quic_t* quic) {
     }
 }
 
+static void
+picoquic_log_secret_call_back(ptls_log_secret_t* _self,
+    ptls_t *tls, const char* label, ptls_iovec_t secret)
+{
+    FILE *keylog_file = *(FILE**)(((char*)_self) + sizeof(ptls_log_secret_t));
+
+    /* Assume one concurrent writer for now, need locking otherwise. */
+    ptls_iovec_t crandom = ptls_get_client_random(tls);
+    fprintf(keylog_file, "%s ", label);
+    for (int i = 0; i < crandom.len; i++) {
+        fprintf(keylog_file, "%02x", crandom.base[i]);
+    }
+    fputc(' ', keylog_file);
+    for (int i = 0; i < secret.len; i++) {
+        fprintf(keylog_file, "%02x", secret.base[i]);
+    }
+    fputc('\n', keylog_file);
+    fflush(keylog_file);
+}
+
 /*
  * Setting the master TLS context.
  * On servers, this implies setting the "on hello" call back
@@ -623,6 +643,31 @@ int picoquic_master_tlscontext(picoquic_quic_t* quic,
                 save_ticket->cb = picoquic_client_save_ticket_call_back;
                 ctx->save_ticket = save_ticket;
                 *ppquic = quic;
+            }
+        }
+
+
+        // TODO make this cleaner, maybe create picoquic_set_keylog callback?
+        {
+            ptls_log_secret_t *log_secret;
+            static int inited = 0;
+            static FILE *keylog_file;
+            if (!inited) {
+                const char *keylog_filename = getenv("SSLKEYLOGFILE");
+                if (keylog_filename) {
+                    keylog_file = fopen(keylog_filename, "a");
+                }
+            }
+            if (keylog_file) {
+                // TODO free memory?
+                log_secret = (ptls_log_secret_t*)malloc(sizeof(ptls_log_secret_t) + sizeof(FILE*));
+                if (log_secret != NULL) {
+                    FILE** ppfile = (FILE**)(((char*)log_secret) + sizeof(ptls_log_secret_t));
+
+                    ctx->log_secret = log_secret;
+                    log_secret->cb = picoquic_log_secret_call_back;
+                    *ppfile = keylog_file;
+                }
             }
         }
 
